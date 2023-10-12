@@ -5,6 +5,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.busapp.busapp.GeoJSON.Feature;
+import com.busapp.busapp.GeoJSON.FeatureCollection;
+import com.busapp.busapp.GeoJSON.Geometry;
+import com.busapp.busapp.GeoJSON.Properties;
 import com.busapp.busapp.entity.CleanBusData;
 import com.busapp.busapp.entity.RawBusData;
 import com.busapp.busapp.repository.CleanBusDataRepository;
@@ -18,14 +22,23 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import com.opencsv.CSVReader;
 import com.opencsv.CSVReaderBuilder;
 import com.opencsv.exceptions.CsvException;
+
+
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalTime;
 import java.util.Date;
+import java.util.LinkedHashMap;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
 public class BusDataService {
@@ -389,6 +402,396 @@ public class BusDataService {
         return(distinctPublishedLineNames);
         
     }
+
+    public String vehRef(String vehicleReference) throws IOException, SQLException{
+    try (Connection connection = DriverManager.getConnection(jdbcUrl, username, password);
+         Statement statement = connection.createStatement()) {
+
+        //Fetch Data from Repo Query
+        List<CleanBusData> allRows = cleanBusDataRepository.findByVehicleRef(vehicleReference);
+
+        // Create a new empty list for sorted data
+        List<CleanBusData> sortedByOriginNameList = allRows.stream()
+            .sorted(Comparator.comparing(CleanBusData::getOriginName))
+            .collect(Collectors.toList());
+
+        // Create a list to store the groups of rows
+        List<List<CleanBusData>> groupAsFeatureList = new ArrayList<>();
+
+        // Initialize variables to keep track of the current group
+        List<CleanBusData> currentGroup = new ArrayList<>();
+        CleanBusData previousRow = null;
+
+        for (CleanBusData row : sortedByOriginNameList) {
+            if (previousRow == null) {
+                // For the first row, initialize the previousRow and add the row to the current group
+                previousRow = row;
+                currentGroup.add(row);
+            } else if (row.getOriginName().equals(previousRow.getOriginName())
+                    && row.getDestinationName().equals(previousRow.getDestinationName())
+                    && isWithin8To12Minutes(previousRow.getRecordedAtTime(), row.getRecordedAtTime())) {
+                // Add the current row to the current group
+                currentGroup.add(row);
+                previousRow = row; // Update previousRow
+            } else {
+                // Start a new group
+                groupAsFeatureList.add(currentGroup);
+                currentGroup = new ArrayList<>();
+                currentGroup.add(row);
+                previousRow = row; // Update previousRow
+            }
+        }
+
+        // Add the last group to the list
+        groupAsFeatureList.add(currentGroup);
+
+        List<Feature> featureList = new ArrayList<>();
+
+        for (List<CleanBusData> group : groupAsFeatureList) {
+            Feature feature = new Feature();
+            feature.setType("Feature"); // Set the type of the Feature object
+        
+            // Create and set the Geometry object
+            Geometry geometry = new Geometry();
+            if (isPointGeometry(group)) {
+                geometry.setType("Point"); // Set the type to "Point" if it's a point geometry
+                List<Double> coordinates = new ArrayList<>();
+        
+                for (CleanBusData cleanBusData : group) {
+                    
+                    coordinates.add(cleanBusData.getVehicleLocationLongitude()); // Replace with the actual method to get longitude
+                    coordinates.add(cleanBusData.getVehicleLocationLatitude()); // Replace with the actual method to get latitude
+                    geometry.setCoordinates(coordinates);
+                }
+        
+                
+                feature.setGeometry(geometry);
+        
+            // Create and set the Properties object
+            Properties properties = new Properties();
+            // Set properties as needed
+            properties.setVehicleRef(group.get(0).getVehicleRef());
+            properties.setPublishedLineName(group.get(0).getPublishedLineName());
+            properties.setOriginName(group.get(0).getOriginName());
+            properties.setDestinationName(group.get(0).getDestinationName());
+            properties.setDirectionRef(Integer.toString(group.get(0).getDirectionRef()));
+            properties.setStartTime(group.get(0).getRecordedAtTime().toString());
+            if(group.get(group.size() - 1).getExpectedArrivalTime()==null){
+                properties.setEndTime("NA");
+            }
+            else{
+                properties.setEndTime(group.get(group.size() - 1).getExpectedArrivalTime().toString());
+            }
+            
+            // Calculate the number of points
+            int numOfPoints = coordinates.size();
+            properties.setNumOfPoints(Integer.toString(numOfPoints));
+
+            // Create a map to store point properties
+            Map<String, Object> pointProperties = new LinkedHashMap<>();
+
+                
+            String pointKey = "Point " + (1);
+                    
+            pointProperties.put(pointKey + " geom", "MyLatLong(longitude=" + coordinates.get(0) + ", latitude=" + coordinates.get(1) + ")");
+            pointProperties.put(pointKey + " arrival", group.get(0).getArrivalProximityText());
+            pointProperties.put(pointKey + " dist from stop", Integer.toString(group.get(0).getDistanceFromStop()));
+
+            if (group.get(0).getExpectedArrivalTime() != null) {
+                String expectedArrivalTimeStr = group.get(0).getExpectedArrivalTime().toString();
+                pointProperties.put(pointKey + " time", expectedArrivalTimeStr);
+            } else {
+                pointProperties.put(pointKey + " time", "NA");
+            }
+                
+
+                // Add the map of point properties to the Properties class
+                properties.setPoint(pointProperties);
+                        
+                // Add other properties as needed
+                feature.setProperties(properties);
+
+                featureList.add(feature);    
+            } else {
+                geometry.setType("LineString"); // Set the type to "LineString" if it's not a point geometry
+                List<List<Double> > coordinates = new ArrayList<>();
+        
+                for (CleanBusData cleanBusData : group) {
+                    List<Double> coordinatePair = new ArrayList<>();
+                    coordinatePair.add(cleanBusData.getVehicleLocationLongitude()); // Replace with the actual method to get longitude
+                    coordinatePair.add(cleanBusData.getVehicleLocationLatitude()); // Replace with the actual method to get latitude
+                    coordinates.add(coordinatePair);
+                    
+                }
+        
+                geometry.setCoordinates(coordinates);
+        
+            feature.setGeometry(geometry);
+        
+            // Create and set the Properties object
+            Properties properties = new Properties();
+            // Set properties as needed
+            properties.setVehicleRef(group.get(0).getVehicleRef());
+            properties.setPublishedLineName(group.get(0).getPublishedLineName());
+            properties.setOriginName(group.get(0).getOriginName());
+            properties.setDestinationName(group.get(0).getDestinationName());
+            properties.setDirectionRef(Integer.toString(group.get(0).getDirectionRef()));
+            properties.setStartTime(group.get(0).getRecordedAtTime().toString());
+            if(group.get(group.size() - 1).getExpectedArrivalTime()==null){
+                properties.setEndTime("NA");
+            }
+            else{
+                properties.setEndTime(group.get(group.size() - 1).getExpectedArrivalTime().toString());
+            }
+            
+            // Calculate the number of points
+            int numOfPoints = coordinates.size();
+            properties.setNumOfPoints(Integer.toString(numOfPoints));
+
+            // Create a map to store point properties
+            Map<String, Object> pointProperties = new LinkedHashMap<>();
+
+                for (int i = 0; i < numOfPoints; i++) {
+                    String pointKey = "Point " + (i + 1);
+                    
+                    pointProperties.put(pointKey + " geom", "MyLatLong(longitude=" + coordinates.get(i).get(0) + ", latitude=" + coordinates.get(i).get(1) + ")");
+                    pointProperties.put(pointKey + " arrival", group.get(i).getArrivalProximityText());
+                    pointProperties.put(pointKey + " dist from stop", Integer.toString(group.get(i).getDistanceFromStop()));
+
+                    if (group.get(i).getExpectedArrivalTime() != null) {
+                        String expectedArrivalTimeStr = group.get(i).getExpectedArrivalTime().toString();
+                        pointProperties.put(pointKey + " time", expectedArrivalTimeStr);
+                    } else {
+                        pointProperties.put(pointKey + " time", "NA");
+                    }
+                }
+
+                // Add the map of point properties to the Properties class
+                properties.setPoint(pointProperties);
+                        
+                // Add other properties as needed
+                feature.setProperties(properties);
+
+                featureList.add(feature);    
+                                 
+            }
+        }
+
+        //Create Feature Collection
+        FeatureCollection featureCollection = new FeatureCollection();
+        featureCollection.setType("FeatureCollection");
+        featureCollection.setFeatures(featureList);
+
+        //Serialize the GeoJSONFeatureCollection to JSON using Jackson
+        ObjectMapper objectMapper = new ObjectMapper();
+        String geoJSONString = objectMapper.writeValueAsString(featureCollection);
+
+        //Display GeoJSON
+        return geoJSONString;
+    }
+}
+    
+    public String pubLine(String publishedLine) throws IOException, SQLException{
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, username, password);
+         Statement statement = connection.createStatement()) {
+        
+        // Fetch Data from Repo Query
+        List<CleanBusData> allRows = cleanBusDataRepository.findByPublishedLine(publishedLine);
+
+        // Sort the list by vehicle reference, origin name, and recorded time
+        List<CleanBusData> sortedByVehRefList = allRows.stream()
+            .sorted(Comparator.comparing(CleanBusData::getVehicleRef)
+                .thenComparing((a, b) -> a.getOriginName().compareTo(b.getOriginName()))
+                .thenComparing(CleanBusData::getRecordedAtTime))
+            .collect(Collectors.toList());
+
+        // Create a list to store the groups of rows
+        List<List<CleanBusData>> groupAsFeatureList = new ArrayList<>();
+
+        // Initialize variables to keep track of the current group
+        List<CleanBusData> currentGroup = new ArrayList<>();
+        CleanBusData previousRow = null;
+        
+        for (CleanBusData row : sortedByVehRefList) {
+            if (previousRow == null) {
+                // For the first row, initialize the previousRow and add the row to the current group
+                previousRow = row;
+                currentGroup.add(row);
+            } else if (row.getOriginName().equals(previousRow.getOriginName())
+                    && row.getDestinationName().equals(previousRow.getDestinationName())
+                    && isWithin8To12Minutes(previousRow.getRecordedAtTime(), row.getRecordedAtTime())) {
+                // Add the current row to the current group
+                currentGroup.add(row);
+                previousRow = row; // Update previousRow
+            } else {
+                // Start a new group
+                groupAsFeatureList.add(currentGroup);
+                currentGroup = new ArrayList<>();
+                currentGroup.add(row);
+                previousRow = row; // Update previousRow
+            }
+        }
+        // Add the last group to the list
+        groupAsFeatureList.add(currentGroup);
+
+        List<Feature> featureList = new ArrayList<>();
+        
+        for (List<CleanBusData> group : groupAsFeatureList) {
+            Feature feature = new Feature();
+            feature.setType("Feature"); // Set the type of the Feature object
+        
+            // Create and set the Geometry object
+            Geometry geometry = new Geometry();
+            if (isPointGeometry(group)) {
+                geometry.setType("Point"); // Set the type to "Point" if it's a point geometry
+                List<Double> coordinates = new ArrayList<>();
+        
+                coordinates.add(group.get(0).getVehicleLocationLongitude()); // Replace with the actual method to get longitude
+                coordinates.add(group.get(0).getVehicleLocationLatitude()); // Replace with the actual method to get latitude             
+        
+                geometry.setCoordinates(coordinates);
+                feature.setGeometry(geometry);
+        
+            // Create and set the Properties object
+            Properties properties = new Properties();
+            // Set properties as needed
+            properties.setVehicleRef(group.get(0).getVehicleRef());
+            properties.setPublishedLineName(group.get(0).getPublishedLineName());
+            properties.setOriginName(group.get(0).getOriginName());
+            properties.setDestinationName(group.get(0).getDestinationName());
+            properties.setDirectionRef(Integer.toString(group.get(0).getDirectionRef()));
+            properties.setStartTime(group.get(0).getRecordedAtTime().toString());
+            if(group.get(group.size() - 1).getExpectedArrivalTime()==null){
+                properties.setEndTime("NA");
+            }
+            else{
+                properties.setEndTime(group.get(group.size() - 1).getExpectedArrivalTime().toString());
+            }
+            
+            // Calculate the number of points
+            int numOfPoints = coordinates.size();
+            properties.setNumOfPoints(Integer.toString(numOfPoints));
+
+            // Create a map to store point properties
+            Map<String, Object> pointProperties = new LinkedHashMap<>();
+
+                
+                    String pointKey = "Point " + (1);
+                    
+                    pointProperties.put(pointKey + " geom", "MyLatLong(longitude=" + coordinates.get(0) + ", latitude=" + coordinates.get(1) + ")");
+                    pointProperties.put(pointKey + " arrival", group.get(0).getArrivalProximityText());
+                    pointProperties.put(pointKey + " dist from stop", Integer.toString(group.get(0).getDistanceFromStop()));
+
+                    if (group.get(0).getExpectedArrivalTime() != null) {
+                        String expectedArrivalTimeStr = group.get(0).getExpectedArrivalTime().toString();
+                        pointProperties.put(pointKey + " time", expectedArrivalTimeStr);
+                    } else {
+                        pointProperties.put(pointKey + " time", "NA");
+                    }
+                
+
+                // Add the map of point properties to the Properties class
+                properties.setPoint(pointProperties);
+                        
+                // Add other properties as needed
+                feature.setProperties(properties);
+
+                featureList.add(feature);    
+            } else {
+                geometry.setType("LineString"); // Set the type to "LineString" if it's not a point geometry
+                List<List<Double> > coordinates = new ArrayList<>();
+        
+                for (CleanBusData cleanBusData : group) {
+                    List<Double> coordinatePair = new ArrayList<>();
+                    coordinatePair.add(cleanBusData.getVehicleLocationLongitude()); // Replace with the actual method to get longitude
+                    coordinatePair.add(cleanBusData.getVehicleLocationLatitude()); // Replace with the actual method to get latitude
+                    coordinates.add(coordinatePair);
+                    geometry.setCoordinates(coordinates);
+                    
+                }
+        
+                
+        
+            feature.setGeometry(geometry);
+        
+                
+        
+            feature.setGeometry(geometry);
+        
+            // Create and set the Properties object
+            Properties properties = new Properties();
+            // Set properties as needed
+            properties.setVehicleRef(group.get(0).getVehicleRef());
+            properties.setPublishedLineName(group.get(0).getPublishedLineName());
+            properties.setOriginName(group.get(0).getOriginName());
+            properties.setDestinationName(group.get(0).getDestinationName());
+            properties.setDirectionRef(Integer.toString(group.get(0).getDirectionRef()));
+            properties.setStartTime(group.get(0).getRecordedAtTime().toString());
+            if(group.get(group.size() - 1).getExpectedArrivalTime()==null){
+                properties.setEndTime("NA");
+            }
+            else{
+                properties.setEndTime(group.get(group.size() - 1).getExpectedArrivalTime().toString());
+            }
+            
+            // Calculate the number of points
+            int numOfPoints = coordinates.size();
+            properties.setNumOfPoints(Integer.toString(numOfPoints));
+
+            // Create a map to store point properties
+            Map<String, Object> pointProperties = new LinkedHashMap<>();
+
+                for (int i = 0; i < numOfPoints; i++) {
+                    String pointKey = "Point " + (i + 1);
+                    
+                    pointProperties.put(pointKey + " geom", "MyLatLong(longitude=" + coordinates.get(i).get(0) + ", latitude=" + coordinates.get(i).get(1) + ")");
+                    pointProperties.put(pointKey + " arrival", group.get(i).getArrivalProximityText());
+                    pointProperties.put(pointKey + " dist from stop", Integer.toString(group.get(i).getDistanceFromStop()));
+
+                    if (group.get(i).getExpectedArrivalTime() != null) {
+                        String expectedArrivalTimeStr = group.get(i).getExpectedArrivalTime().toString();
+                        pointProperties.put(pointKey + " time", expectedArrivalTimeStr);
+                    } else {
+                        pointProperties.put(pointKey + " time", "NA");
+                    }
+                }
+
+                // Add the map of point properties to the Properties class
+                properties.setPoint(pointProperties);
+                        
+                // Add other properties as needed
+                feature.setProperties(properties);
+
+                featureList.add(feature);    
+                                 
+            }
+        }
+
+        //Create Feature Collection
+        FeatureCollection featureCollection = new FeatureCollection();
+        featureCollection.setType("FeatureCollection");
+        featureCollection.setFeatures(featureList);
+
+        //Serialize the GeoJSONFeatureCollection to JSON using Jackson
+        ObjectMapper objectMapper = new ObjectMapper();
+        String geoJSONString = objectMapper.writeValueAsString(featureCollection);
+
+        //Display GeoJSON
+        return geoJSONString;
+    }
+    }
+
+    boolean isWithin8To12Minutes(Date time1, Date time2) {
+        long timeDifference = Math.abs(time1.getTime() - time2.getTime());
+        long eightMinutesInMillis = 8 * 60 * 1000; // 8 minutes in milliseconds
+        long twelveMinutesInMillis = 12 * 60 * 1000; // 12 minutes in milliseconds
+
+        return timeDifference >= eightMinutesInMillis && timeDifference <= twelveMinutesInMillis;
+    }
+
+    private boolean isPointGeometry(List<CleanBusData> cleanBusData) {
+    return cleanBusData.size() == 1;
+}
 
     public void saveAllRawBusData(List<RawBusData> busdata) {
         rawBusDataRepository.saveAll(busdata);

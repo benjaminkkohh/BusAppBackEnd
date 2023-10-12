@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
@@ -15,7 +16,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.List;
-
 import com.busapp.busapp.service.BusDataService;
 
 @CrossOrigin
@@ -72,6 +72,32 @@ public class BusAppController {
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(busDataService.getPublishedLineNames());
+        }
+    }
+
+     @GetMapping("/findByVehicleRef/{vehicleReference}")
+     @ResponseBody
+    public ResponseEntity <String> findByVehicleRef(@PathVariable String vehicleReference) throws IOException, SQLException{
+        try {
+            busDataService.vehRef(vehicleReference);
+
+            return ResponseEntity.ok(busDataService.vehRef(vehicleReference));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(busDataService.vehRef(vehicleReference));
+        }
+    }
+
+    @GetMapping("/findByPublishedLine/{publishedLine}")
+     @ResponseBody
+    public ResponseEntity <String> findByPublishedLine(@PathVariable String publishedLine) throws IOException, SQLException{
+        try {
+            busDataService.pubLine(publishedLine);
+
+            return ResponseEntity.ok(busDataService.pubLine(publishedLine));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(busDataService.pubLine(publishedLine));
         }
     }
 }

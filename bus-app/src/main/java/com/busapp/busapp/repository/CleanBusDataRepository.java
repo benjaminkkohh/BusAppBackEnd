@@ -17,6 +17,14 @@ public interface CleanBusDataRepository extends JpaRepository<CleanBusData, Long
 
     List<String> findDistinctPublishedLineName();
 
+    @Query("SELECT cbd FROM CleanBusData cbd WHERE cbd.vehicleRef = :vehicleReference")
+
+    List<CleanBusData> findByVehicleRef(String vehicleReference);
+
+    @Query("SELECT cbd FROM CleanBusData cbd WHERE cbd.publishedLineName = :publishedLine")
+
+    List<CleanBusData> findByPublishedLine(String publishedLine);
+
 }
 
 
